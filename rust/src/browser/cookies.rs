@@ -401,46 +401,8 @@ impl CookieExtractor {
 
             tracing::debug!("Decrypted {} bytes successfully", plaintext.len(),);
 
-            // Some Chromium versions prepend metadata bytes before the actual
-            // cookie value in the AES-GCM plaintext.  If the leading bytes look
-            // non-ASCII, skip up to a 32-byte internal header to find the start
-            // of the cookie string.  This is distinct from App-Bound Encryption
-            // (ABE): ABE failures are caught upstream as AES-GCM authentication
-            // errors and never reach this point.
-            let value_bytes = if plaintext.len() > 32 {
-                // Check if first 32 bytes are garbage (non-ASCII)
-                let has_garbage_prefix = plaintext[..32].iter().any(|&b| !(32..=127).contains(&b));
-                if has_garbage_prefix {
-                    // Find where ASCII text starts (skip prefix)
-                    let start = plaintext
-                        .iter()
-                        .position(|&b| {
-                            // Look for common cookie value start chars
-                            b.is_ascii_alphanumeric() || b == b'"' || b == b'{'
-                        })
-                        .unwrap_or(0);
-
-                    // But use a minimum of 32 bytes prefix for App-Bound Encryption
-                    let actual_start = if start < 32 && plaintext.len() > 32 {
-                        32
-                    } else {
-                        start
-                    };
-
-                    tracing::debug!(
-                        "Skipping {} byte prefix (App-Bound Encryption)",
-                        actual_start
-                    );
-                    &plaintext[actual_start..]
-                } else {
-                    &plaintext[..]
-                }
-            } else {
-                &plaintext[..]
-            };
-
-            String::from_utf8(value_bytes.to_vec()).map_err(|e| {
-                tracing::debug!("UTF-8 conversion failed after prefix strip: {}", e);
+            String::from_utf8(plaintext).map_err(|e| {
+                tracing::debug!("UTF-8 conversion failed for decrypted cookie value: {}", e);
                 CookieError::Decryption(e.to_string())
             })
         } else {
