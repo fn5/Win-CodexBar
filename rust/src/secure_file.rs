@@ -312,7 +312,30 @@ fn restrict_file_permissions(path: &Path) -> io::Result<()> {
     std::fs::set_permissions(path, perms)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn restrict_file_permissions(path: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "secure file path must not be a symlink",
+        ));
+    }
+
+    if let Some(config_dir) = dirs::config_dir().map(|p| p.join("CodexBar"))
+        && let (Ok(file_abs), Ok(config_abs)) = (std::fs::canonicalize(path), std::fs::canonicalize(config_dir))
+        && !file_abs.starts_with(config_abs)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "secure file must be under the CodexBar config directory",
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn restrict_file_permissions(_path: &Path) -> io::Result<()> {
     Ok(())
 }
