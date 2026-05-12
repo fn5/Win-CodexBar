@@ -462,6 +462,7 @@ pub fn apply_update(installer_path: &PathBuf) -> Result<(), String> {
     // The installer should detect the running app and wait or prompt
     #[cfg(target_os = "windows")]
     {
+        verify_installer_signature(installer_path)?;
         Command::new(installer_path)
             .args(["/SILENT", "/CLOSEAPPLICATIONS"])
             .spawn()
@@ -477,6 +478,109 @@ pub fn apply_update(installer_path: &PathBuf) -> Result<(), String> {
 
     // Exit the application to allow the installer to proceed
     std::process::exit(0);
+}
+
+#[cfg(target_os = "windows")]
+fn verify_installer_signature(installer_path: &Path) -> Result<(), String> {
+    use std::process::Command;
+
+    let path = installer_path
+        .to_str()
+        .ok_or_else(|| "Installer path is not valid UTF-8".to_string())?;
+    let escaped = path.replace('\'', "''");
+    let command = format!(
+        "(Get-AuthenticodeSignature -LiteralPath '{escaped}' | Select-Object Status,SignerCertificate | ConvertTo-Json -Compress)"
+    );
+
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &command,
+        ])
+        .output()
+        .map_err(|e| format!("Failed to run Authenticode verification: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Authenticode verification command failed: {}",
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let signature = parse_authenticode_result(&stdout)?;
+    if !signature.status.eq_ignore_ascii_case("Valid") {
+        return Err(format!(
+            "Downloaded installer Authenticode signature is not valid (status: {})",
+            signature.status
+        ));
+    }
+
+    if let Ok(required_thumbprint) = std::env::var("CODEXBAR_UPDATER_SIGNER_THUMBPRINT")
+        && !required_thumbprint.trim().is_empty()
+    {
+        let actual_thumbprint = signature
+            .thumbprint
+            .as_deref()
+            .ok_or_else(|| "Installer signature has no signer thumbprint".to_string())?;
+        if !normalize_thumbprint(actual_thumbprint)
+            .eq_ignore_ascii_case(&normalize_thumbprint(&required_thumbprint))
+        {
+            return Err("Installer signer thumbprint does not match expected value".to_string());
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn verify_installer_signature(_installer_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthenticodeResult {
+    #[serde(rename = "Status")]
+    status: String,
+    #[serde(rename = "SignerCertificate")]
+    signer_certificate: Option<AuthenticodeSignerCertificate>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AuthenticodeSignerCertificate {
+    #[serde(rename = "Thumbprint")]
+    thumbprint: Option<String>,
+}
+
+#[derive(Debug)]
+struct ParsedAuthenticodeSignature {
+    status: String,
+    thumbprint: Option<String>,
+}
+
+fn parse_authenticode_result(raw_json: &str) -> Result<ParsedAuthenticodeSignature, String> {
+    let parsed: AuthenticodeResult = serde_json::from_str(raw_json.trim()).map_err(|e| {
+        format!(
+            "Failed to parse Authenticode verification output as JSON: {}",
+            e
+        )
+    })?;
+    Ok(ParsedAuthenticodeSignature {
+        status: parsed.status,
+        thumbprint: parsed.signer_certificate.and_then(|s| s.thumbprint),
+    })
+}
+
+fn normalize_thumbprint(input: &str) -> String {
+    input
+        .chars()
+        .filter(|c| c.is_ascii_hexdigit())
+        .collect::<String>()
 }
 
 /// Check if there's a pending update ready to install
@@ -680,5 +784,20 @@ mod tests {
         let wrong = "0".repeat(64);
         let err = verify_installer_hash(&path, &wrong).unwrap_err();
         assert!(err.contains("SHA256 mismatch"));
+    }
+
+    #[test]
+    fn parse_authenticode_result_parses_valid_status_and_thumbprint() {
+        let parsed = parse_authenticode_result(
+            r#"{"Status":"Valid","SignerCertificate":{"Thumbprint":"AB CD 12 34"}}"#,
+        )
+        .expect("parsed");
+        assert_eq!(parsed.status, "Valid");
+        assert_eq!(parsed.thumbprint.as_deref(), Some("AB CD 12 34"));
+    }
+
+    #[test]
+    fn normalize_thumbprint_strips_non_hex_characters() {
+        assert_eq!(normalize_thumbprint("AB CD-12:34"), "ABCD1234");
     }
 }
