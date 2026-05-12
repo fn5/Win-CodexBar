@@ -87,6 +87,33 @@ begin
     not WebView2InstalledInView(HKCU);
 end;
 
+procedure EnsureSignedInstaller(const InstallerPath: String; const ProductLabel: String);
+var
+  ResultCode: Integer;
+  Command: String;
+begin
+  Command :=
+    '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ' +
+    '"$sig = Get-AuthenticodeSignature -LiteralPath ''''' + InstallerPath + '''''; ' +
+    'if ($sig.Status -ne ''Valid'') { exit 1 }"';
+
+  if not Exec(
+    ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'),
+    Command,
+    '',
+    SW_HIDE,
+    ewWaitUntilTerminated,
+    ResultCode
+  ) then
+    RaiseException('Failed to verify code signature for ' + ProductLabel + '.');
+
+  if ResultCode <> 0 then
+    RaiseException(
+      ProductLabel +
+      ' installer signature is not valid. Aborting installation for security.'
+    );
+end;
+
 procedure EnsureWebView2Installed();
 var
   ResultCode: Integer;
@@ -95,6 +122,10 @@ begin
     exit;
 
   ExtractTemporaryFile('MicrosoftEdgeWebview2Setup.exe');
+  EnsureSignedInstaller(
+    ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe'),
+    'Microsoft Edge WebView2 Runtime'
+  );
 
   WizardForm.StatusLabel.Caption := 'Installing Microsoft Edge WebView2 Runtime...';
   WizardForm.ProgressGauge.Style := npbstMarquee;
@@ -152,6 +183,10 @@ begin
     exit;
 
   ExtractTemporaryFile('vc_redist.x64.exe');
+  EnsureSignedInstaller(
+    ExpandConstant('{tmp}\vc_redist.x64.exe'),
+    'Microsoft Visual C++ Runtime'
+  );
 
   WizardForm.StatusLabel.Caption := 'Installing Microsoft Visual C++ Runtime...';
   WizardForm.ProgressGauge.Style := npbstMarquee;
