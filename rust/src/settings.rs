@@ -895,6 +895,31 @@ impl Settings {
     }
 
     #[cfg(target_os = "windows")]
+    fn validate_startup_exe_path(exe_path: &std::path::Path) -> anyhow::Result<()> {
+        if !exe_path.is_absolute() {
+            anyhow::bail!("Autostart executable path must be absolute");
+        }
+        if !exe_path.exists() {
+            anyhow::bail!("Autostart executable path does not exist");
+        }
+        if exe_path
+            .file_name()
+            .and_then(|f| f.to_str())
+            .map(|f| !f.eq_ignore_ascii_case("codexbar.exe"))
+            .unwrap_or(true)
+        {
+            anyhow::bail!("Autostart executable must be codexbar.exe");
+        }
+
+        let metadata = std::fs::symlink_metadata(exe_path)?;
+        if metadata.file_type().is_symlink() {
+            anyhow::bail!("Autostart executable path must not be a symlink");
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
     pub fn apply_start_at_login_registry(enabled: bool) -> anyhow::Result<()> {
         use winreg::RegKey;
         use winreg::enums::*;
@@ -907,6 +932,7 @@ impl Settings {
 
         if enabled {
             let exe_path = std::env::current_exe()?;
+            Self::validate_startup_exe_path(&exe_path)?;
             let command = Self::start_at_login_command(&exe_path);
             run_key.set_value("CodexBar", &command)?;
         } else {
