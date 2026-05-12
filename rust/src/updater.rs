@@ -528,8 +528,7 @@ fn verify_installer_signature(installer_path: &Path) -> Result<(), String> {
             .thumbprint
             .as_deref()
             .ok_or_else(|| "Installer signature has no signer thumbprint".to_string())?;
-        if !normalize_thumbprint(actual_thumbprint)
-            .eq_ignore_ascii_case(&normalize_thumbprint(&required_thumbprint))
+        if !normalize_thumbprint(actual_thumbprint).eq(&normalize_thumbprint(&required_thumbprint))
         {
             return Err("Installer signer thumbprint does not match expected value".to_string());
         }

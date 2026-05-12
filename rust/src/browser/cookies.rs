@@ -274,7 +274,7 @@ impl CookieExtractor {
     fn open_sqlite_readonly(path: &Path) -> Result<Connection, CookieError> {
         Ok(Connection::open_with_flags(
             path,
-            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
         )?)
     }
 

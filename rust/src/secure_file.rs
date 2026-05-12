@@ -14,6 +14,7 @@ use sha2::Sha256;
 
 const FORMAT: &str = "codexbar.secure-file";
 const VERSION: u32 = 1;
+const PBKDF2_ITERATIONS: u32 = 600_000;
 const WINDOWS_DPAPI_USER: &str = "windows-dpapi-user";
 const WINDOWS_DPAPI_MACHINE: &str = "windows-dpapi-machine";
 const SOFTWARE_AES256_GCM: &str = "software-aes256gcm-v1";
@@ -274,14 +275,14 @@ fn unprotect_software(payload: &[u8]) -> io::Result<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn derive_software_key(salt: &[u8]) -> io::Result<[u8; 32]> {
-    let machine_secret = machine_secret_material();
+    let machine_secret = machine_secret_material()?;
     let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(&machine_secret, salt, 100_000, &mut key);
+    pbkdf2_hmac::<Sha256>(&machine_secret, salt, PBKDF2_ITERATIONS, &mut key);
     Ok(key)
 }
 
 #[cfg(not(windows))]
-fn machine_secret_material() -> Vec<u8> {
+fn machine_secret_material() -> io::Result<Vec<u8>> {
     let mut secret = Vec::new();
     if let Ok(v) = std::fs::read("/etc/machine-id")
         && !v.is_empty()
@@ -299,9 +300,11 @@ fn machine_secret_material() -> Vec<u8> {
         secret.extend_from_slice(username.as_bytes());
     }
     if secret.is_empty() {
-        secret.extend_from_slice(b"codexbar-nonwindows-fallback-secret");
+        return Err(io::Error::other(
+            "unable to derive non-Windows secure-file key material from host identity",
+        ));
     }
-    secret
+    Ok(secret)
 }
 
 #[cfg(unix)]
