@@ -12,7 +12,7 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use base64::Engine;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use thiserror::Error;
 
 use super::detection::{BrowserProfile, DetectedBrowser};
@@ -186,13 +186,6 @@ impl CookieExtractor {
         })?;
         tracing::debug!("Got encryption key ({} bytes)", encryption_key.len());
 
-        // Copy the database to a temp file (browser may have it locked)
-        tracing::debug!("Copying cookies DB to temp...");
-        let temp_db = Self::copy_to_temp(&cookies_db).map_err(|e| {
-            tracing::debug!("Failed to copy cookies DB: {}", e);
-            e
-        })?;
-
         let domain_pattern = format!("%{}", domain);
         let dot_domain_pattern = format!(".{}", domain);
         tracing::debug!("Searching for cookies for domain {}", domain);
@@ -200,8 +193,7 @@ impl CookieExtractor {
         let mut cookies = Vec::new();
         let mut decrypt_failures: u32 = 0;
         {
-            // Keep SQLite handles scoped so Windows can delete the temp DB afterward.
-            let conn = Connection::open(&temp_db)?;
+            let conn = Self::open_sqlite_readonly(&cookies_db)?;
 
             let mut stmt = conn.prepare(
                 "SELECT name, encrypted_value, host_key, path, expires_utc, is_secure, is_httponly
@@ -258,9 +250,6 @@ impl CookieExtractor {
             decrypt_failures
         );
 
-        // Clean up temp file
-        let _ = std::fs::remove_file(&temp_db);
-
         // If every candidate cookie failed to decrypt and no cookies were recovered,
         // check whether Chrome App-Bound Encryption (Chrome 127+) is the culprit.
         // ABE replaces the user-level DPAPI cookie key with a system-level key that
@@ -279,6 +268,14 @@ impl CookieExtractor {
         }
 
         Ok(cookies)
+    }
+
+    /// Open a SQLite database in read-only mode directly from the source profile.
+    fn open_sqlite_readonly(path: &Path) -> Result<Connection, CookieError> {
+        Ok(Connection::open_with_flags(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?)
     }
 
     /// Get the Chromium encryption key from Local State
