@@ -119,23 +119,15 @@ fn protected_file_bytes(contents: &str) -> io::Result<Vec<u8>> {
 
 #[cfg(windows)]
 fn protect(plain: &[u8]) -> io::Result<(&'static str, Vec<u8>)> {
-    use windows::Win32::Security::Cryptography::{
-        CRYPTPROTECT_LOCAL_MACHINE, CRYPTPROTECT_UI_FORBIDDEN,
-    };
+    use windows::Win32::Security::Cryptography::CRYPTPROTECT_UI_FORBIDDEN;
 
-    match protect_with_flags(plain, CRYPTPROTECT_UI_FORBIDDEN) {
-        Ok(encrypted) => Ok((WINDOWS_DPAPI_USER, encrypted)),
-        Err(user_error) => protect_with_flags(
-            plain,
-            CRYPTPROTECT_UI_FORBIDDEN | CRYPTPROTECT_LOCAL_MACHINE,
-        )
-        .map(|encrypted| (WINDOWS_DPAPI_MACHINE, encrypted))
-        .map_err(|machine_error| {
+    protect_with_flags(plain, CRYPTPROTECT_UI_FORBIDDEN)
+        .map(|encrypted| (WINDOWS_DPAPI_USER, encrypted))
+        .map_err(|user_error| {
             io::Error::other(format!(
-                "CryptProtectData failed with user scope ({user_error}) and machine scope ({machine_error})"
+                "CryptProtectData failed in user scope ({user_error}); machine-scope fallback is disabled"
             ))
-        }),
-    }
+        })
 }
 
 #[cfg(windows)]
