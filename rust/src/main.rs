@@ -1,49 +1,29 @@
 use clap::Parser;
 use codexbar::{
     cli::{self, Cli, Commands, exit_codes},
-    logging, wsl,
+    logging,
 };
 
-/// Redact sensitive CLI arguments (tokens, keys, cookies) from log output
-fn redact_sensitive_args(args: &[String]) -> Vec<String> {
-    let sensitive_flags = ["--token", "--api-key", "--key", "--cookie", "--password"];
-    let mut result = Vec::with_capacity(args.len());
-    let mut redact_next = false;
-    for arg in args {
-        if redact_next {
-            result.push("[REDACTED]".to_string());
-            redact_next = false;
-        } else if sensitive_flags.iter().any(|f| arg.starts_with(f)) {
-            if arg.contains('=') {
-                let prefix = arg.split('=').next().unwrap_or(arg);
-                result.push(format!("{}=[REDACTED]", prefix));
-            } else {
-                result.push(arg.clone());
-                redact_next = true;
-            }
-        } else {
-            result.push(arg.clone());
-        }
-    }
-    result
+fn launch_log_path() -> std::path::PathBuf {
+    std::env::temp_dir().join("codexbar_launch.log")
 }
 
-fn main() {
-    // Log immediately at program start (redact sensitive args)
-    let log_path = std::env::temp_dir().join("codexbar_launch.log");
-    let args: Vec<String> = std::env::args().collect();
-    let redacted_args = redact_sensitive_args(&args);
+fn log_launch_start() {
+    // Keep this log intentionally sparse: no provider identifiers, no WSL details.
+    let log_path = launch_log_path();
+    let arg_count = std::env::args().count();
     let _ = std::fs::write(
         &log_path,
         format!(
-            "main() started at {:?}\nArgs: {:?}\n",
+            "main() started at {:?}\narg_count={}\n",
             std::time::SystemTime::now(),
-            redacted_args
+            arg_count
         ),
     );
+}
 
-    let exit_code = run();
-
+fn log_launch_exit(exit_code: i32) {
+    let log_path = launch_log_path();
     let _ = std::fs::OpenOptions::new()
         .append(true)
         .open(&log_path)
@@ -51,28 +31,18 @@ fn main() {
             use std::io::Write;
             writeln!(f, "Exiting with code: {}", exit_code)
         });
+}
+
+fn main() {
+    log_launch_start();
+
+    let exit_code = run();
+    log_launch_exit(exit_code);
 
     std::process::exit(exit_code);
 }
 
 fn run() -> i32 {
-    // Log to file immediately for debugging
-    let log_path = std::env::temp_dir().join("codexbar_launch.log");
-    let mut log = String::new();
-    log.push_str(&format!("Starting at {:?}\n", std::time::SystemTime::now()));
-
-    if wsl::is_wsl() {
-        log.push_str("Running inside WSL\n");
-        if let Some(info) = wsl::get_wsl_info() {
-            log.push_str(&format!("  Distro: {}\n", info.distro_name));
-            log.push_str(&format!("  Drive mount: {:?}\n", info.drive_mount));
-        }
-    }
-
-    let args: Vec<String> = std::env::args().collect();
-    log.push_str(&format!("Args: {:?}\n", redact_sensitive_args(&args)));
-    let _ = std::fs::write(&log_path, &log);
-
     let cli = Cli::parse();
 
     // Initialize logging
