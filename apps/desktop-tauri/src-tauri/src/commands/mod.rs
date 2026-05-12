@@ -1677,8 +1677,7 @@ pub(super) fn open_url_in_browser(url: &str) -> Result<(), String> {
     let url = validate_external_url(url)?;
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new(windows_system_binary("rundll32.exe"))
-            .arg("url.dll,FileProtocolHandler")
+        std::process::Command::new(windows_system_binary("explorer.exe"))
             .arg(url)
             .spawn()
             .map_err(|e| format!("Failed to open URL: {e}"))?;
