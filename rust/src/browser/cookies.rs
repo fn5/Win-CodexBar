@@ -468,16 +468,12 @@ impl CookieExtractor {
             )));
         }
 
-        // Copy to temp (browser may have it locked)
-        let temp_db = Self::copy_to_temp(&cookies_db)?;
-
         let domain_pattern = format!("%{}", domain);
         let dot_domain_pattern = format!(".{}", domain);
 
         let mut cookies = Vec::new();
         {
-            // Keep SQLite handles scoped so Windows can delete the temp DB afterward.
-            let conn = Connection::open(&temp_db)?;
+            let conn = Self::open_sqlite_readonly(&cookies_db)?;
 
             let mut stmt = conn.prepare(
                 "SELECT name, value, host, path, expiry, isSecure, isHttpOnly
@@ -501,9 +497,6 @@ impl CookieExtractor {
                 cookies.push(row?);
             }
         }
-
-        // Clean up
-        let _ = std::fs::remove_file(&temp_db);
 
         Ok(cookies)
     }
@@ -531,49 +524,6 @@ impl CookieExtractor {
     #[cfg(not(windows))]
     fn read_file_shared(path: &Path) -> Result<String, CookieError> {
         Ok(std::fs::read_to_string(path)?)
-    }
-
-    /// Copy a file to a temp location
-    /// Uses Windows-specific file sharing to handle locked files
-    fn copy_to_temp(path: &Path) -> Result<std::path::PathBuf, CookieError> {
-        let temp_dir = std::env::temp_dir();
-        let file_name = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let temp_path = temp_dir.join(format!("codexbar_{}_{}", uuid::Uuid::new_v4(), file_name));
-
-        // On Windows, use FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
-        // to read files that are locked by other processes
-        #[cfg(windows)]
-        {
-            use std::fs::File;
-            use std::io::{Read, Write};
-            use std::os::windows::fs::OpenOptionsExt;
-
-            const FILE_SHARE_READ: u32 = 0x00000001;
-            const FILE_SHARE_WRITE: u32 = 0x00000002;
-            const FILE_SHARE_DELETE: u32 = 0x00000004;
-
-            let mut src = std::fs::OpenOptions::new()
-                .read(true)
-                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
-                .open(path)?;
-
-            let mut contents = Vec::new();
-            src.read_to_end(&mut contents)?;
-
-            let mut dst = File::create(&temp_path)?;
-            dst.write_all(&contents)?;
-        }
-
-        #[cfg(not(windows))]
-        {
-            std::fs::copy(path, &temp_path)?;
-        }
-
-        Ok(temp_path)
     }
 
     /// Build a cookie header string for HTTP requests
