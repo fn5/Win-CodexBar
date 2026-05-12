@@ -237,8 +237,8 @@ fn protect_software(plain: &[u8]) -> io::Result<Vec<u8>> {
     let salt: [u8; 16] = random();
     let nonce: [u8; 12] = random();
     let key = derive_software_key(&salt)?;
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
     let ciphertext = cipher
         .encrypt(Nonce::from_slice(&nonce), plain)
         .map_err(|e| io::Error::other(format!("encrypt failed: {e}")))?;
@@ -265,8 +265,8 @@ fn unprotect_software(payload: &[u8]) -> io::Result<Vec<u8>> {
     let nonce = &payload[16..28];
     let ciphertext = &payload[28..];
     let key = derive_software_key(salt)?;
-    let cipher =
-        Aes256Gcm::new_from_slice(&key).map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
+    let cipher = Aes256Gcm::new_from_slice(&key)
+        .map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
     cipher
         .decrypt(Nonce::from_slice(nonce), ciphertext)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("decrypt failed: {e}")))
@@ -323,7 +323,10 @@ fn restrict_file_permissions(path: &Path) -> io::Result<()> {
     }
 
     if let Some(config_dir) = dirs::config_dir().map(|p| p.join("CodexBar"))
-        && let (Ok(file_abs), Ok(config_abs)) = (std::fs::canonicalize(path), std::fs::canonicalize(config_dir))
+        && let (Ok(file_abs), Ok(config_abs)) = (
+            std::fs::canonicalize(path),
+            std::fs::canonicalize(config_dir),
+        )
         && !file_abs.starts_with(config_abs)
     {
         return Err(io::Error::new(
