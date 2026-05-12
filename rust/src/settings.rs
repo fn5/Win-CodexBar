@@ -847,6 +847,62 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn drain_provider_config_secrets(&mut self) -> (Vec<(String, String)>, Vec<(String, String)>) {
+        let mut migrated_cookies = Vec::new();
+        let mut migrated_api_keys = Vec::new();
+
+        for (provider_id, config) in &mut self.provider_configs {
+            let provider = provider_id.cli_name().to_string();
+
+            if let Some(cookie_header) = config.manual_cookie_header.take() {
+                let trimmed = cookie_header.trim();
+                if !trimmed.is_empty() {
+                    migrated_cookies.push((provider.clone(), trimmed.to_string()));
+                }
+            }
+
+            if let Some(api_token) = config.api_token.take() {
+                let trimmed = api_token.trim();
+                if !trimmed.is_empty() {
+                    migrated_api_keys.push((provider, trimmed.to_string()));
+                }
+            }
+        }
+
+        (migrated_cookies, migrated_api_keys)
+    }
+
+    fn migrate_provider_config_secrets(&mut self) {
+        let (cookies, keys) = self.drain_provider_config_secrets();
+        if cookies.is_empty() && keys.is_empty() {
+            return;
+        }
+
+        let mut manual_cookies = ManualCookies::load();
+        for (provider, value) in cookies {
+            if manual_cookies.get(&provider).is_none() {
+                manual_cookies.set(&provider, &value);
+            }
+        }
+
+        let mut api_keys = ApiKeys::load();
+        for (provider, value) in keys {
+            if api_keys.get(&provider).is_none() {
+                api_keys.set(&provider, &value, None);
+            }
+        }
+
+        if let Err(e) = manual_cookies.save() {
+            tracing::warn!("Failed to persist migrated manual cookie secrets: {e}");
+        }
+        if let Err(e) = api_keys.save() {
+            tracing::warn!("Failed to persist migrated API key secrets: {e}");
+        }
+        if let Err(e) = self.save() {
+            tracing::warn!("Failed to persist settings after secret migration: {e}");
+        }
+    }
+
     /// Get the settings file path
     pub fn settings_path() -> Option<PathBuf> {
         dirs::config_dir().map(|p| p.join("CodexBar").join("settings.json"))
@@ -870,6 +926,8 @@ impl Settings {
         {
             settings.start_at_login = Self::is_start_at_login_enabled();
         }
+
+        settings.migrate_provider_config_secrets();
 
         settings
     }
@@ -2248,5 +2306,22 @@ mod tests {
         assert!(settings.openai_web_extras(ProviderId::Codex));
         assert!(!settings.historical_tracking(ProviderId::Codex));
         assert!(!settings.avoid_keychain_prompts(ProviderId::Claude));
+    }
+
+    #[test]
+    fn test_drain_provider_config_secrets_moves_values_out_of_settings() {
+        let mut settings = Settings::default();
+        settings.set_manual_cookie_header(ProviderId::Alibaba, "cookie=value");
+        settings.set_api_token(ProviderId::MiniMax, "tok_value");
+
+        let (cookies, keys) = settings.drain_provider_config_secrets();
+
+        assert_eq!(
+            cookies,
+            vec![("alibaba".to_string(), "cookie=value".to_string())]
+        );
+        assert_eq!(keys, vec![("minimax".to_string(), "tok_value".to_string())]);
+        assert_eq!(settings.manual_cookie_header(ProviderId::Alibaba), "");
+        assert_eq!(settings.api_token(ProviderId::MiniMax), "");
     }
 }
