@@ -74,6 +74,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 # Encryption for cookie decryption
 aes-gcm = "0.10"
 base64 = "0.22"
+pbkdf2 = "0.12"
 
 # Hashing for update verification
 sha2 = "0.10"

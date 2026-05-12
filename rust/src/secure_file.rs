@@ -4,12 +4,19 @@ use std::io;
 use std::path::Path;
 
 use base64::Engine;
+#[cfg(not(windows))]
+use pbkdf2::pbkdf2_hmac;
+#[cfg(not(windows))]
+use rand::random;
 use serde::{Deserialize, Serialize};
+#[cfg(not(windows))]
+use sha2::Sha256;
 
 const FORMAT: &str = "codexbar.secure-file";
 const VERSION: u32 = 1;
 const WINDOWS_DPAPI_USER: &str = "windows-dpapi-user";
 const WINDOWS_DPAPI_MACHINE: &str = "windows-dpapi-machine";
+const SOFTWARE_AES256_GCM: &str = "software-aes256gcm-v1";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct ProtectedFile {
@@ -53,7 +60,9 @@ pub fn status(path: &Path) -> SecureFileStatus {
     }
 
     match file.protection.as_str() {
-        WINDOWS_DPAPI_USER | WINDOWS_DPAPI_MACHINE => SecureFileStatus::Protected(file.protection),
+        WINDOWS_DPAPI_USER | WINDOWS_DPAPI_MACHINE | SOFTWARE_AES256_GCM => {
+            SecureFileStatus::Protected(file.protection)
+        }
         other => {
             SecureFileStatus::Unreadable(format!("unsupported secure file protection {other}"))
         }
@@ -85,6 +94,13 @@ pub fn read_string(path: &Path) -> io::Result<String> {
             let plain = unprotect(&encrypted)?;
             String::from_utf8(plain).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
         }
+        SOFTWARE_AES256_GCM => {
+            let encrypted = base64::engine::general_purpose::STANDARD
+                .decode(file.payload.as_bytes())
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+            let plain = unprotect_software(&encrypted)?;
+            String::from_utf8(plain).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+        }
         other => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("unsupported secure file protection {other}"),
@@ -114,7 +130,14 @@ fn protected_file_bytes(contents: &str) -> io::Result<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn protected_file_bytes(contents: &str) -> io::Result<Vec<u8>> {
-    Ok(contents.as_bytes().to_vec())
+    let encrypted = protect_software(contents.as_bytes())?;
+    let file = ProtectedFile {
+        format: FORMAT.to_string(),
+        version: VERSION,
+        protection: SOFTWARE_AES256_GCM.to_string(),
+        payload: base64::engine::general_purpose::STANDARD.encode(encrypted),
+    };
+    serde_json::to_vec_pretty(&file).map_err(io::Error::other)
 }
 
 #[cfg(windows)]
@@ -206,6 +229,81 @@ fn unprotect(_encrypted: &[u8]) -> io::Result<Vec<u8>> {
     ))
 }
 
+#[cfg(not(windows))]
+fn protect_software(plain: &[u8]) -> io::Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    let salt: [u8; 16] = random();
+    let nonce: [u8; 12] = random();
+    let key = derive_software_key(&salt)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
+    let ciphertext = cipher
+        .encrypt(Nonce::from_slice(&nonce), plain)
+        .map_err(|e| io::Error::other(format!("encrypt failed: {e}")))?;
+
+    let mut payload = Vec::with_capacity(16 + 12 + ciphertext.len());
+    payload.extend_from_slice(&salt);
+    payload.extend_from_slice(&nonce);
+    payload.extend_from_slice(&ciphertext);
+    Ok(payload)
+}
+
+#[cfg(not(windows))]
+fn unprotect_software(payload: &[u8]) -> io::Result<Vec<u8>> {
+    use aes_gcm::aead::{Aead, KeyInit};
+    use aes_gcm::{Aes256Gcm, Nonce};
+
+    if payload.len() < 28 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "software encrypted payload is too short",
+        ));
+    }
+    let salt = &payload[..16];
+    let nonce = &payload[16..28];
+    let ciphertext = &payload[28..];
+    let key = derive_software_key(salt)?;
+    let cipher =
+        Aes256Gcm::new_from_slice(&key).map_err(|e| io::Error::other(format!("cipher init: {e}")))?;
+    cipher
+        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("decrypt failed: {e}")))
+}
+
+#[cfg(not(windows))]
+fn derive_software_key(salt: &[u8]) -> io::Result<[u8; 32]> {
+    let machine_secret = machine_secret_material();
+    let mut key = [0u8; 32];
+    pbkdf2_hmac::<Sha256>(&machine_secret, salt, 100_000, &mut key);
+    Ok(key)
+}
+
+#[cfg(not(windows))]
+fn machine_secret_material() -> Vec<u8> {
+    let mut secret = Vec::new();
+    if let Ok(v) = std::fs::read("/etc/machine-id")
+        && !v.is_empty()
+    {
+        secret.extend(v);
+    }
+    if let Ok(hostname) = std::env::var("HOSTNAME")
+        && !hostname.is_empty()
+    {
+        secret.extend_from_slice(hostname.as_bytes());
+    }
+    if let Ok(username) = std::env::var("USER")
+        && !username.is_empty()
+    {
+        secret.extend_from_slice(username.as_bytes());
+    }
+    if secret.is_empty() {
+        secret.extend_from_slice(b"codexbar-nonwindows-fallback-secret");
+    }
+    secret
+}
+
 #[cfg(unix)]
 fn restrict_file_permissions(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -239,6 +337,18 @@ mod tests {
         write_string(&path, r#"{"secret":"value"}"#).unwrap();
 
         assert_eq!(read_string(&path).unwrap(), r#"{"secret":"value"}"#);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_write_uses_encrypted_wrapper() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("secure.json");
+        write_string(&path, r#"{"secret":"value"}"#).unwrap();
+        let raw = std::fs::read_to_string(path).unwrap();
+        assert!(raw.contains(FORMAT));
+        assert!(raw.contains(SOFTWARE_AES256_GCM));
+        assert!(!raw.contains("\"secret\":\"value\""));
     }
 
     #[test]
