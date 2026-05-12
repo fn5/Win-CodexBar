@@ -22,6 +22,24 @@ pub struct AntigravityProvider {
 }
 
 impl AntigravityProvider {
+    fn enforce_loopback_url(url: &str) -> Result<(), ProviderError> {
+        let parsed = url::Url::parse(url).map_err(|e| ProviderError::Other(e.to_string()))?;
+        if parsed.scheme() != "https" {
+            return Err(ProviderError::Other(
+                "Antigravity endpoint must use https".to_string(),
+            ));
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| ProviderError::Other("Antigravity endpoint host missing".to_string()))?;
+        if host != "127.0.0.1" && host != "localhost" {
+            return Err(ProviderError::Other(
+                "Antigravity insecure TLS client is restricted to loopback hosts".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn new() -> Self {
         Self {
             metadata: ProviderMetadata {
@@ -130,6 +148,7 @@ impl AntigravityProvider {
                 "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUnleashData",
                 port
             );
+            Self::enforce_loopback_url(&url)?;
 
             // Just check if the port responds (even with error)
             if let Ok(resp) = client
@@ -153,6 +172,7 @@ impl AntigravityProvider {
                 "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUnleashData",
                 port
             );
+            Self::enforce_loopback_url(&url)?;
             if let Ok(resp) = client
                 .post(&url)
                 .header("Content-Type", "application/json")
@@ -188,6 +208,7 @@ impl AntigravityProvider {
             "https://127.0.0.1:{}/exa.language_server_pb.LanguageServerService/GetUserStatus",
             api_port
         );
+        Self::enforce_loopback_url(&url)?;
 
         let body = serde_json::json!({
             "metadata": {
